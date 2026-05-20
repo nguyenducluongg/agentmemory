@@ -8,16 +8,18 @@ import { renderViewerDocument } from "./document.js";
 
 const ALLOWED_ORIGINS = (
   process.env.VIEWER_ALLOWED_ORIGINS ||
-  "http://localhost:3111,http://localhost:3113,http://127.0.0.1:3111,http://127.0.0.1:3113"
+  "*"
 )
   .split(",")
   .map((o) => o.trim());
 
 function corsHeaders(req: IncomingMessage): Record<string, string> {
   const origin = req.headers.origin || "";
-  const allowed = ALLOWED_ORIGINS.includes(origin)
-    ? origin
-    : ALLOWED_ORIGINS[0];
+  const allowed = ALLOWED_ORIGINS.includes("*")
+    ? origin || "*"
+    : ALLOWED_ORIGINS.includes(origin)
+      ? origin
+      : ALLOWED_ORIGINS[0];
   return {
     "Access-Control-Allow-Origin": allowed,
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
@@ -120,8 +122,8 @@ export function startViewerServer(
     }
   });
 
-  server.listen(port, "127.0.0.1", () => {
-    console.log(`[agentmemory] Viewer: http://localhost:${port}`);
+  server.listen(port, "0.0.0.0", () => {
+    console.log(`[agentmemory] Viewer: http://0.0.0.0:${port}`);
   });
 
   return server;
