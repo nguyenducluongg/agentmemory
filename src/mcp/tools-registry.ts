@@ -75,6 +75,10 @@ export const CORE_TOOLS: McpToolDef[] = [
           type: "string",
           description: "Comma-separated relevant file paths",
         },
+        project: {
+          type: "string",
+          description: "Project name to scope this memory to",
+        },
       },
       required: ["content"],
     },
@@ -122,6 +126,10 @@ export const CORE_TOOLS: McpToolDef[] = [
           description: "Comma-separated observation IDs to expand",
         },
         limit: { type: "number", description: "Max results (default 10)" },
+        project: {
+          type: "string",
+          description: "Project name to filter results by",
+        },
       },
       required: ["query"],
     },

@@ -14,9 +14,10 @@ export function registerSmartSearchFunction(
   kv: StateKV,
   searchFn: (query: string, limit: number) => Promise<HybridSearchResult[]>,
 ): void {
-  sdk.registerFunction("mem::smart-search", 
+  sdk.registerFunction("mem::smart-search",
     async (data: {
       query?: string;
+      project?: string;
       expandIds?: Array<string | { obsId: string; sessionId: string }>;
       limit?: number;
     }) => {
@@ -70,7 +71,15 @@ export function registerSmartSearchFunction(
       const limit = Math.max(1, Math.min(data.limit ?? 20, 100));
       const hybridResults = await searchFn(data.query, limit);
 
-      const compact: CompactSearchResult[] = hybridResults.map((r) => ({
+      // Filter by project if provided (backward-compatible: unscoped memories always match)
+      const projectFiltered = data.project
+        ? hybridResults.filter((r) => {
+          const obs = r.observation as CompressedObservation & { project?: string };
+          return !obs.project || obs.project === data.project;
+        })
+        : hybridResults;
+
+      const compact: CompactSearchResult[] = projectFiltered.map((r) => ({
         obsId: r.observation.id,
         sessionId: r.sessionId,
         title: r.observation.title,
@@ -86,6 +95,7 @@ export function registerSmartSearchFunction(
 
       logger.info("Smart search compact", {
         query: data.query,
+        project: data.project,
         results: compact.length,
       });
       return { mode: "compact", results: compact };

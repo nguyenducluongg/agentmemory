@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import path from "node:path";
 import { InMemoryKV } from "./in-memory-kv.js";
 import { createStdioTransport } from "./transport.js";
 import { getAllTools } from "./tools-registry.js";
@@ -31,6 +32,81 @@ const SERVER_INFO = {
 
 const kv = new InMemoryKV(getStandalonePersistPath());
 let modeAnnounced = false;
+
+// --- Auto-detect project from cwd basename (override via env) ---
+const AUTO_PROJECT =
+  process.env["AGENTMEMORY_PROJECT"] ||
+  path.basename(process.cwd()) ||
+  "default";
+const AUTO_SESSION_ID = `ses_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+let autoSessionStarted = false;
+
+/**
+ * Ensure a session is started on the server (fire once per MCP lifetime).
+ * This tags all subsequent observations with the correct project.
+ */
+async function ensureAutoSession(proxyHandle: ProxyHandle): Promise<void> {
+  if (autoSessionStarted) return;
+  autoSessionStarted = true;
+  try {
+    await proxyHandle.call("/agentmemory/session/start", {
+      method: "POST",
+      body: JSON.stringify({
+        sessionId: AUTO_SESSION_ID,
+        project: AUTO_PROJECT,
+        cwd: process.cwd(),
+      }),
+    });
+    process.stderr.write(
+      `[@agentmemory/mcp] auto-session started: project=${AUTO_PROJECT} session=${AUTO_SESSION_ID}\n`,
+    );
+  } catch {
+    process.stderr.write(
+      `[@agentmemory/mcp] auto-session start failed (non-fatal)\n`,
+    );
+  }
+}
+
+/**
+ * Inject project into tool args before forwarding to the server.
+ * This ensures all project-aware tools receive the correct project scope.
+ */
+function injectProjectArg(args: Record<string, unknown>): Record<string, unknown> {
+  if (!args.project) {
+    args.project = AUTO_PROJECT;
+  }
+  return args;
+}
+
+/**
+ * Auto-observe a tool call result by POSTing to the server's observe endpoint.
+ * Fire-and-forget: errors are silently ignored so the agent is never blocked.
+ */
+function fireAutoObserve(
+  handle: ProxyHandle,
+  toolName: string,
+  toolInput: unknown,
+  toolOutput: unknown,
+): void {
+  const payload = {
+    hookType: "post_tool_use",
+    sessionId: AUTO_SESSION_ID,
+    project: AUTO_PROJECT,
+    cwd: process.cwd(),
+    timestamp: new Date().toISOString(),
+    data: {
+      tool_name: toolName,
+      tool_input: toolInput,
+      tool_output: JSON.stringify(toolOutput).slice(0, 8000),
+    },
+  };
+  handle
+    .call("/agentmemory/observe", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    })
+    .catch(() => { }); // fire-and-forget
+}
 
 function announceMode(handle: Handle): void {
   if (modeAnnounced) return;
@@ -155,6 +231,7 @@ async function handleProxy(
           type: v.type,
           concepts: v.concepts,
           files: v.files,
+          project: AUTO_PROJECT,
         }),
       });
       return textResponse(result);
@@ -163,7 +240,7 @@ async function handleProxy(
     case "memory_smart_search": {
       const result = await handle.call("/agentmemory/smart-search", {
         method: "POST",
-        body: JSON.stringify({ query: v.query, limit: v.limit }),
+        body: JSON.stringify({ query: v.query, limit: v.limit, project: AUTO_PROJECT }),
       });
       return textResponse(result, true);
     }
@@ -320,13 +397,23 @@ export async function handleToolCall(
   const handle = await resolveHandle();
   announceMode(handle);
 
+  // Inject project into all tool args for project-scoped tools
+  injectProjectArg(args);
+
+  // Auto-start session on first proxy call
+  if (handle.mode === "proxy") {
+    await ensureAutoSession(handle);
+  }
+
+  let result: { content: Array<{ type: string; text: string }> };
+
   // Tools the local InMemoryKV fallback doesn't implement: forward straight
   // to the server. Local validation would otherwise raise "Unknown tool"
   // (issue #234).
   if (!IMPLEMENTED_TOOLS.has(toolName)) {
     if (handle.mode === "proxy") {
       try {
-        return await handleProxyGeneric(toolName, args, handle);
+        result = await handleProxyGeneric(toolName, args, handle);
       } catch (err) {
         process.stderr.write(
           `[@agentmemory/mcp] proxy call failed for ${toolName}: ${err instanceof Error ? err.message : String(err)}\n`,
@@ -334,24 +421,34 @@ export async function handleToolCall(
         invalidateHandle();
         throw err;
       }
+    } else {
+      throw new Error(
+        `Unknown tool: ${toolName} (local fallback supports only ${[...IMPLEMENTED_TOOLS].join(", ")}; start an agentmemory server and set AGENTMEMORY_URL to use the full tool set)`,
+      );
     }
-    throw new Error(
-      `Unknown tool: ${toolName} (local fallback supports only ${[...IMPLEMENTED_TOOLS].join(", ")}; start an agentmemory server and set AGENTMEMORY_URL to use the full tool set)`,
-    );
+  } else {
+    const validated = validate(toolName, args);
+    if (handle.mode === "proxy") {
+      try {
+        result = await handleProxy(validated, handle);
+      } catch (err) {
+        process.stderr.write(
+          `[@agentmemory/mcp] proxy call failed for ${toolName}: ${err instanceof Error ? err.message : String(err)}; invalidating handle and falling back to local KV\n`,
+        );
+        invalidateHandle();
+        result = await handleLocal(validated, kvInstance);
+      }
+    } else {
+      result = await handleLocal(validated, kvInstance);
+    }
   }
 
-  const validated = validate(toolName, args);
+  // Auto-observe: record this tool call as an observation (fire-and-forget)
   if (handle.mode === "proxy") {
-    try {
-      return await handleProxy(validated, handle);
-    } catch (err) {
-      process.stderr.write(
-        `[@agentmemory/mcp] proxy call failed for ${toolName}: ${err instanceof Error ? err.message : String(err)}; invalidating handle and falling back to local KV\n`,
-      );
-      invalidateHandle();
-    }
+    fireAutoObserve(handle, toolName, args, result);
   }
-  return handleLocal(validated, kvInstance);
+
+  return result;
 }
 
 export async function handleToolsList(): Promise<{ tools: unknown[] }> {

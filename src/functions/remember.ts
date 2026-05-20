@@ -10,12 +10,13 @@ import { getSearchIndex } from "./search.js";
 import { logger } from "../logger.js";
 
 export function registerRememberFunction(sdk: ISdk, kv: StateKV): void {
-  sdk.registerFunction("mem::remember", 
+  sdk.registerFunction("mem::remember",
     async (data: {
       content: string;
       type?: string;
       concepts?: string[];
       files?: string[];
+      project?: string;
       ttlDays?: number;
       sourceObservationIds?: string[];
     }) => {
@@ -78,6 +79,7 @@ export function registerRememberFunction(sdk: ISdk, kv: StateKV): void {
           content: data.content,
           concepts: data.concepts || [],
           files: data.files || [],
+          project: data.project,
           sessionIds: [],
           strength: 7,
           version: supersededId ? supersededVersion + 1 : 1,

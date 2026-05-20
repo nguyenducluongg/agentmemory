@@ -157,6 +157,10 @@ describe("@agentmemory/mcp standalone — server proxy (issue #159)", () => {
           { status: 200, headers: { "content-type": "application/json" } },
         );
       }
+      // Accept auto-session and auto-observe calls silently
+      if (url.includes("/agentmemory/session/start") || url.includes("/agentmemory/observe")) {
+        return new Response("{}", { status: 200 });
+      }
       return new Response("not found", { status: 404 });
     });
 
@@ -167,9 +171,10 @@ describe("@agentmemory/mcp standalone — server proxy (issue #159)", () => {
     const body = JSON.parse(res.content[0].text);
     expect(body.saved).toBe("lesson_xyz");
     expect(calls).toHaveLength(1);
+    // project is auto-injected by injectProjectArg
     expect(calls[0].body).toEqual({
       name: "memory_lesson_save",
-      arguments: { title: "Always pin lockfiles", content: "..." },
+      arguments: expect.objectContaining({ title: "Always pin lockfiles", content: "..." }),
     });
   });
 
